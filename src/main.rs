@@ -116,13 +116,7 @@ fn main() {
     println!("\t Server speed:          {} bits/s", pspeed);
     println!("\t Simulation time:       {}s", duration);
     println!("\t Resolution:            1µs");
-    if qlimit.is_some() {
-        println!(
-            "\t Queue size limit:      {}",
-            qlimit.expect("Invalid queue size input")
-        );
-    }
-    println!();
+    println!("\t Queue size limit:      {:?}", qlimit);
     println!(
         "\t Ticks per packet:      {}",
         f64::from(psize) / f64::from(pspeed) * resolution
@@ -151,10 +145,6 @@ fn main() {
         }
     }
 
-    let leftovers = server.qlen();
-    let cstats = client.statistics;
-    let sstats = server.statistics;
-
     println!("Simulation results:");
     println!(
         "\t Average sojourn time:              {:.4} +/- {:.4} seconds",
@@ -168,25 +158,23 @@ fn main() {
     );
     println!(
         "\t Packets generated:                 {} packets",
-        cstats.packets_generated
+        client.packets_generated()
     );
     println!(
         "\t Packets processed:                 {} packets",
-        sstats.packets_processed
+        server.packets_processed()
     );
-    if qlimit != DEFAULT_QLIMIT {
-        println!(
-            "\t Packets droppped:                  {} packets",
-            sstats.packets_dropped
-        );
-        println!(
-            "\t Packet loss probability:           {:.2}%",
-            f64::from(sstats.packets_dropped) / f64::from(cstats.packets_generated) * 100.0
-        );
-    }
+    println!(
+        "\t Packets droppped:                  {} packets",
+        server.packets_dropped()
+    );
+    println!(
+        "\t Packet loss probability:           {:.2}%",
+        f64::from(server.packets_dropped()) / f64::from(client.packets_generated()) * 100.0
+    );
     println!(
         "\t Server idle proportion:            {:.2}%",
-        f64::from(sstats.idle_count) / f64::from(sstats.idle_count + sstats.process_count) * 100.0
+        server.idle_proportion()
     );
-    println!("\t Packets leftover in queue:         {}", leftovers);
+    println!("\t Packets leftover in queue:         {}", server.qlen());
 }

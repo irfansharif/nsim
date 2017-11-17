@@ -1,18 +1,48 @@
-extern crate qlib;
+extern crate nlib;
 extern crate getopts;
 extern crate stats;
 
 use getopts::Options;
-use qlib::generators::*;
-use qlib::simulators::*;
+use nlib::generators::*;
+use nlib::simulators::*;
 use stats::OnlineStats;
 use std::env;
+use std::fmt;
 
-const DEFAULT_RATE: u32 = 10_000;
+const DEFAULT_RATE: u32 = 10;
 const DEFAULT_PSIZE: u32 = 1;
-const DEFAULT_PSPEED: u32 = 10_000;
+const DEFAULT_LSPEED: u32 = 1_000_000;
 const DEFAULT_DURATION: u32 = 5;
-const DEFAULT_QLIMIT: Option<usize> = None;
+const DEFAULT_NODE_COUNT: u32 = 10;
+const DEFAULT_PERSISTENCE: bool = false;
+
+struct Params {
+    rate: u32,
+    psize: u32,
+    lspeed: u32,
+    duration: u32,
+    ncount: u32,
+    persistence: bool,
+    resolution: f64,
+}
+
+impl fmt::Display for Params {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        writeln!(f, "Simulation configuration:").unwrap();
+        writeln!(f, "\t Rate:                  {} packets/s", self.rate).unwrap();
+        writeln!(f, "\t Packet size:           {} bits", self.psize).unwrap();
+        writeln!(f, "\t LAN speed:             {} bits/s", self.lspeed).unwrap();
+        writeln!(f, "\t Simulation duration:   {}s", self.duration).unwrap();
+        writeln!(f, "\t Node count:            {} nodes", self.ncount).unwrap();
+        writeln!(f, "\t CSMA/CD Persistence:   {}", self.persistence).unwrap();
+        writeln!(f, "\t Resolution:            1µs").unwrap(); // TODO(irfansharif).
+        write!(
+            f,
+            "\t Ticks per packet:      {}",
+            f64::from(self.psize) / f64::from(self.lspeed) * self.resolution
+        )
+    }
+}
 
 fn construct_options() -> Options {
     let mut opts = Options::new();
@@ -34,8 +64,11 @@ fn construct_options() -> Options {
     );
     opts.optopt(
         "",
-        "pspeed",
-        &format!("Packet processing speed; bits/s (def: {})", DEFAULT_PSPEED),
+        "lspeed",
+        &format!(
+            "LAN speed in terms of bits read from/written to network links; bits/s (def: {})",
+            DEFAULT_LSPEED
+        ),
         "NUM",
     );
     opts.optopt(
@@ -49,17 +82,25 @@ fn construct_options() -> Options {
     );
     opts.optopt(
         "",
-        "qlimit",
+        "ncount",
         &format!(
-            "Limit on of the buffer queue length; int (def: {:?})",
-            DEFAULT_QLIMIT
+            "Number of nodes connected to the LAN (def: {})",
+            DEFAULT_NODE_COUNT
         ),
         "NUM",
+    );
+    opts.optflag(
+        "",
+        "persistence",
+        &format!(
+            "Simulate 1-persistent CSMA/CD protocol (def: {:?})",
+            DEFAULT_PERSISTENCE
+        ),
     );
     opts
 }
 
-fn parse_params(matches: &getopts::Matches) -> (u32, u32, u32, u32, Option<usize>) {
+fn parse_params(matches: &getopts::Matches) -> Params {
     let rate = match matches.opt_str("rate") {
         Some(x) => x.parse::<u32>().unwrap(),
         None => DEFAULT_RATE,
@@ -68,24 +109,38 @@ fn parse_params(matches: &getopts::Matches) -> (u32, u32, u32, u32, Option<usize
         Some(x) => x.parse::<u32>().unwrap(),
         None => DEFAULT_PSIZE,
     };
-    let pspeed = match matches.opt_str("pspeed") {
+    let lspeed = match matches.opt_str("lspeed") {
         Some(x) => x.parse::<u32>().unwrap(),
-        None => DEFAULT_PSPEED,
+        None => DEFAULT_LSPEED,
     };
     let duration = match matches.opt_str("duration") {
         Some(x) => x.parse::<u32>().unwrap(),
         None => DEFAULT_DURATION,
     };
-    let qlimit = match matches.opt_str("qlimit") {
-        Some(x) => Some(x.parse::<u32>().unwrap() as usize),
-        None => DEFAULT_QLIMIT,
+    let ncount = match matches.opt_str("ncount") {
+        Some(x) => x.parse::<u32>().unwrap(),
+        None => DEFAULT_NODE_COUNT,
     };
+    let persistence = if matches.opt_present("persistence") {
+        true
+    } else {
+        DEFAULT_PERSISTENCE
+    };
+    let resolution = 1e6; // TODO(irfansharif).
 
-    (rate, psize, pspeed, duration, qlimit)
+    Params {
+        rate,
+        psize,
+        lspeed,
+        duration,
+        ncount,
+        persistence,
+        resolution,
+    }
 }
 
 fn print_usage(program: &str, opts: &Options) {
-    let brief = format!("Usage: {} [options]", program);
+    let brief = format!("Usage: {} [Options]", program);
     print!("{}", opts.usage(&brief));
 }
 
@@ -98,6 +153,7 @@ fn main() {
         Ok(m) => m,
         Err(f) => {
             println!("{}: illegal usage -- {}", program, f.to_string());
+            print_usage(&program, &opts);
             std::process::exit(1)
         }
     };
@@ -107,41 +163,37 @@ fn main() {
         return;
     }
 
-    let resolution = 1e6;
-    let (rate, psize, pspeed, duration, qlimit) = parse_params(&matches);
+    let params = parse_params(&matches);
+    println!("{}", params);
 
-    println!("Simulation configuration:");
-    println!("\t Rate:                  {} packets/s", rate);
-    println!("\t Packet size:           {} bits", psize);
-    println!("\t Server speed:          {} bits/s", pspeed);
-    println!("\t Simulation time:       {}s", duration);
-    println!("\t Resolution:            1µs");
-    println!("\t Queue size limit:      {:?}", qlimit);
-    println!(
-        "\t Ticks per packet:      {}",
-        f64::from(psize) / f64::from(pspeed) * resolution
-    );
-    println!();
+    let ticks = params.duration * params.resolution as u32;
+    let mut nodes: Vec<_> = (0..params.ncount)
+        .map(|i| {
+            Node::new(
+                Markov::new(f64::from(params.rate)),
+                params.resolution,
+                (0..params.ncount).filter(|&j| i != j).collect(),
+            )
+        })
+        .collect();
 
-    let ticks = duration * resolution as u32;
-
-    let mut client = Client::new(Markov::new(f64::from(rate)), resolution);
-    let mut server = Server::new(resolution, f64::from(pspeed), qlimit);
+    let mut hub = Hub::new(params.resolution, f64::from(params.lspeed), None);
     let mut pstats = OnlineStats::new();
-    let mut qstats = OnlineStats::new();
 
     for i in 0..ticks {
-        qstats.add(server.qlen());
 
-        if client.tick() {
-            server.enqueue(Packet {
-                time_generated: i,
-                length: psize,
-            });
+        for node in nodes.enumerate_mut() {
+            if let Some(to) = node.tick() {
+                hub.enqueue(Packet {
+                    time_generated: i,
+                    destination_id: to,
+                    length: params.psize,
+                });
+            }
         }
-        if let Some(p) = server.tick() {
+        if let Some(p) = hub.tick() {
             // We record the time it took for the processed packet to get processed.
-            pstats.add(f64::from(i - p.time_generated) / resolution);
+            pstats.add(f64::from(i - p.time_generated) / params.resolution);
         }
     }
 
@@ -151,30 +203,26 @@ fn main() {
         pstats.mean(),
         pstats.stddev()
     );
-    println!(
-        "\t Average # of queued packets:       {:.2} +/- {:.2} packets",
-        qstats.mean(),
-        qstats.stddev()
-    );
+    let packets_generated: u32 = nodes.iter().map(|node| node.packets_generated()).sum();
     println!(
         "\t Packets generated:                 {} packets",
-        client.packets_generated()
+        packets_generated
     );
     println!(
         "\t Packets processed:                 {} packets",
-        server.packets_processed()
+        hub.packets_processed()
     );
     println!(
-        "\t Packets droppped:                  {} packets",
-        server.packets_dropped()
+        "\t Packets dropped:                   {} packets",
+        hub.packets_dropped()
     );
     println!(
         "\t Packet loss probability:           {:.2}%",
-        f64::from(server.packets_dropped()) / f64::from(client.packets_generated()) * 100.0
+        f64::from(hub.packets_dropped()) / f64::from(packets_generated) * 100.0
     );
     println!(
-        "\t Server idle proportion:            {:.2}%",
-        server.idle_proportion()
+        "\t Hub idle proportion:               {:.2}%",
+        hub.idle_proportion()
     );
-    println!("\t Packets leftover in queue:         {}", server.qlen());
+    println!("\t Packets leftover in queue:         {}", hub.qlen());
 }

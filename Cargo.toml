@@ -1,14 +1,14 @@
 [package]
-name = "qsim"
+name = "nsim"
 version = "0.1.0"
 authors = ["irfan sharif <irfanmahmoudsharif@gmail.com>"]
 
 [lib]
-name = "qlib"
+name = "nlib"
 path = "src/lib.rs"
 
 [[bin]]
-name = "qsim"
+name = "nsim"
 path = "src/main.rs"
 
 [dependencies]

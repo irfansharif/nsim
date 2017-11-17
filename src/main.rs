@@ -13,7 +13,7 @@ const DEFAULT_RATE: u32 = 10;
 const DEFAULT_PSIZE: u32 = 1;
 const DEFAULT_LSPEED: u32 = 1_000_000;
 const DEFAULT_DURATION: u32 = 5;
-const DEFAULT_NODE_COUNT: u32 = 10;
+const DEFAULT_CLIENT_COUNT: u32 = 10;
 const DEFAULT_PERSISTENCE: bool = false;
 
 struct Params {
@@ -33,7 +33,7 @@ impl fmt::Display for Params {
         writeln!(f, "\t Packet size:           {} bits", self.psize).unwrap();
         writeln!(f, "\t LAN speed:             {} bits/s", self.lspeed).unwrap();
         writeln!(f, "\t Simulation duration:   {}s", self.duration).unwrap();
-        writeln!(f, "\t Node count:            {} nodes", self.ncount).unwrap();
+        writeln!(f, "\t Client count:            {} Clients", self.ncount).unwrap();
         writeln!(f, "\t CSMA/CD Persistence:   {}", self.persistence).unwrap();
         writeln!(f, "\t Resolution:            1µs").unwrap(); // TODO(irfansharif).
         write!(
@@ -84,8 +84,8 @@ fn construct_options() -> Options {
         "",
         "ncount",
         &format!(
-            "Number of nodes connected to the LAN (def: {})",
-            DEFAULT_NODE_COUNT
+            "Number of Clients connected to the LAN (def: {})",
+            DEFAULT_CLIENT_COUNT
         ),
         "NUM",
     );
@@ -119,7 +119,7 @@ fn parse_params(matches: &getopts::Matches) -> Params {
     };
     let ncount = match matches.opt_str("ncount") {
         Some(x) => x.parse::<u32>().unwrap(),
-        None => DEFAULT_NODE_COUNT,
+        None => DEFAULT_CLIENT_COUNT,
     };
     let persistence = if matches.opt_present("persistence") {
         true
@@ -167,9 +167,9 @@ fn main() {
     println!("{}", params);
 
     let ticks = params.duration * params.resolution as u32;
-    let mut nodes: Vec<_> = (0..params.ncount)
+    let mut clients: Vec<_> = (0..params.ncount)
         .map(|i| {
-            Node::new(
+            Client::new(
                 Markov::new(f64::from(params.rate)),
                 params.resolution,
                 (0..params.ncount).filter(|&j| i != j).collect(),
@@ -177,21 +177,23 @@ fn main() {
         })
         .collect();
 
-    let mut hub = Hub::new(params.resolution, f64::from(params.lspeed), None);
+    let mut server = Server::new(params.resolution, f64::from(params.lspeed), None);
     let mut pstats = OnlineStats::new();
 
     for i in 0..ticks {
-
-        for node in nodes.enumerate_mut() {
-            if let Some(to) = node.tick() {
-                hub.enqueue(Packet {
+        // TODO(irfansharif): Look at and try to use smart pointers, share link ownership with
+        // Clients and the Server such that the main loop body simply ticks all participants instead of
+        // additionally shuffling data around.
+        for (_, client) in clients.iter_mut().enumerate() {
+            if let Some(dest) = client.tick() {
+                server.enqueue(Packet {
                     time_generated: i,
-                    destination_id: to,
+                    destination_id: dest,
                     length: params.psize,
                 });
             }
         }
-        if let Some(p) = hub.tick() {
+        if let Some(p) = server.tick() {
             // We record the time it took for the processed packet to get processed.
             pstats.add(f64::from(i - p.time_generated) / params.resolution);
         }
@@ -203,26 +205,16 @@ fn main() {
         pstats.mean(),
         pstats.stddev()
     );
-    let packets_generated: u32 = nodes.iter().map(|node| node.packets_generated()).sum();
+    let packets_generated: u32 = clients
+        .iter()
+        .map(|client| client.packets_generated())
+        .sum();
     println!(
         "\t Packets generated:                 {} packets",
         packets_generated
     );
     println!(
         "\t Packets processed:                 {} packets",
-        hub.packets_processed()
+        server.packets_processed()
     );
-    println!(
-        "\t Packets dropped:                   {} packets",
-        hub.packets_dropped()
-    );
-    println!(
-        "\t Packet loss probability:           {:.2}%",
-        f64::from(hub.packets_dropped()) / f64::from(packets_generated) * 100.0
-    );
-    println!(
-        "\t Hub idle proportion:               {:.2}%",
-        hub.idle_proportion()
-    );
-    println!("\t Packets leftover in queue:         {}", hub.qlen());
 }

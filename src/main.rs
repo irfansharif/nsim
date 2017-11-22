@@ -1,7 +1,9 @@
 extern crate nlib;
 extern crate getopts;
 extern crate stats;
+extern crate bit_vec;
 
+use bit_vec::BitVec;
 use getopts::Options;
 use nlib::generators::*;
 use nlib::simulators::*;
@@ -13,7 +15,7 @@ const DEFAULT_RATE: u32 = 10;
 const DEFAULT_PSIZE: u32 = 1;
 const DEFAULT_LSPEED: u32 = 1_000_000;
 const DEFAULT_DURATION: u32 = 5;
-const DEFAULT_CLIENT_COUNT: u32 = 10;
+const DEFAULT_SERVER_COUNT: usize = 10;
 const DEFAULT_PERSISTENCE: bool = false;
 
 struct Params {
@@ -21,7 +23,7 @@ struct Params {
     psize: u32,
     lspeed: u32,
     duration: u32,
-    ncount: u32,
+    ncount: usize,
     persistence: bool,
     resolution: f64,
 }
@@ -33,7 +35,7 @@ impl fmt::Display for Params {
         writeln!(f, "\t Packet size:           {} bits", self.psize).unwrap();
         writeln!(f, "\t LAN speed:             {} bits/s", self.lspeed).unwrap();
         writeln!(f, "\t Simulation duration:   {}s", self.duration).unwrap();
-        writeln!(f, "\t Client count:            {} Clients", self.ncount).unwrap();
+        writeln!(f, "\t Server count:            {} Clients", self.ncount).unwrap();
         writeln!(f, "\t CSMA/CD Persistence:   {}", self.persistence).unwrap();
         writeln!(f, "\t Resolution:            1µs").unwrap(); // TODO(irfansharif).
         write!(
@@ -85,7 +87,7 @@ fn construct_options() -> Options {
         "ncount",
         &format!(
             "Number of Clients connected to the LAN (def: {})",
-            DEFAULT_CLIENT_COUNT
+            DEFAULT_SERVER_COUNT
         ),
         "NUM",
     );
@@ -118,8 +120,8 @@ fn parse_params(matches: &getopts::Matches) -> Params {
         None => DEFAULT_DURATION,
     };
     let ncount = match matches.opt_str("ncount") {
-        Some(x) => x.parse::<u32>().unwrap(),
-        None => DEFAULT_CLIENT_COUNT,
+        Some(x) => x.parse::<usize>().unwrap(),
+        None => DEFAULT_SERVER_COUNT,
     };
     let persistence = if matches.opt_present("persistence") {
         true
@@ -167,36 +169,38 @@ fn main() {
     println!("{}", params);
 
     let ticks = params.duration * params.resolution as u32;
-    let mut clients: Vec<_> = (0..params.ncount)
+    let mut servers: Vec<_> = (0..params.ncount)
         .map(|i| {
-            Client::new(
+            let client = Client::new(
                 Markov::new(f64::from(params.rate)),
                 params.resolution,
-                (0..params.ncount).filter(|&j| i != j).collect(),
-            )
+                params.psize,
+            );
+            Server::new(params.resolution, f64::from(params.lspeed), None, i, client)
         })
         .collect();
 
-    let mut server = Server::new(params.resolution, f64::from(params.lspeed), None);
     let mut pstats = OnlineStats::new();
+
+    // Hardcode a 25.6 (rounding up to 26) microsecond delay
+    let mut medium = Medium::new(params.ncount, 26);
 
     for i in 0..ticks {
         // TODO(irfansharif): Look at and try to use smart pointers, share link ownership with
         // Clients and the Server such that the main loop body simply ticks all participants instead of
         // additionally shuffling data around.
-        for client in clients.iter_mut() {
-            if let Some(dest) = client.tick() {
-                server.enqueue(Packet {
-                    time_generated: i,
-                    destination_id: dest,
-                    length: params.psize,
-                });
+        let mut local_state = BitVec::from_elem(params.ncount, false);
+
+        // TODO: Be able to handle multiple packet output
+        // With a packet length of 1000, its impossible for more than 1 packet to be outputted at a given tick
+        let mut packet: Packet;
+        for server in servers.iter_mut() {
+            if let Some(p) = server.tick(&mut local_state, &medium, i) {
+                packet = p;
             }
         }
-        if let Some(p) = server.tick() {
-            // We record the time it took for the processed packet to get processed.
-            pstats.add(f64::from(i - p.time_generated) / params.resolution);
-        }
+        medium.write(local_state);
+        medium.tick();
     }
 
     println!("Simulation results:");
@@ -205,16 +209,20 @@ fn main() {
         pstats.mean(),
         pstats.stddev()
     );
-    let packets_generated: u32 = clients
+    // let packets_generated: u32 = clients
+    //     .iter()
+    //     .map(|client| client.packets_generated())
+    //     .sum();
+    // println!(
+    //     "\t Packets generated:                 {} packets",
+    //     packets_generated
+    // );
+    let packets_processed: u32 = servers
         .iter()
-        .map(|client| client.packets_generated())
+        .map(|server| server.packets_processed())
         .sum();
     println!(
-        "\t Packets generated:                 {} packets",
-        packets_generated
-    );
-    println!(
         "\t Packets processed:                 {} packets",
-        server.packets_processed()
+        packets_processed
     );
 }

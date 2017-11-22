@@ -1,11 +1,10 @@
-extern crate rand;
-
 use std::collections::VecDeque;
-use generators::{Generator, Markov};
-use self::rand::{thread_rng, Rng};
-use cbuffer;
+use generators::Generator;
+use rand::{thread_rng, Rng};
+use bit_vec::BitVec;
+use cbuffer::CircularBuffer;
 
-// Packet holds the value of the time unit that it was generated at, and its length.
+// Packet holds the value of the time unit that it was generated at, its length, and the id of its destination node.
 #[derive(Clone)]
 pub struct Packet {
     pub time_generated: u32,
@@ -175,23 +174,42 @@ impl Server {
     }
 }
 
+// Medium contains a circular buffer, with a bit vector of size n at each index
+//
+// The bit vectors represent the n possible writes that n nodes can perform at one time
 pub struct Medium {
-    tracks: Vec<cbuffer::CircularBuffer<Packet>>,
+    track: CircularBuffer<BitVec>,
+    num_nodes: usize,
 }
 
 impl Medium {
-    fn new(ntracks: usize, csize: usize) -> Medium {
+    fn new(n: usize, csize: usize) -> Medium {
         Medium {
-            tracks: (0..ntracks)
-                .map(|_| cbuffer::CircularBuffer::new(csize))
-                .collect(),
+            track: CircularBuffer::new(
+                csize,
+                BitVec::from_elem(n, false),
+            ),
+            num_nodes: n,
         }
     }
 
     fn tick(&mut self) {
-        for t in self.tracks.iter_mut() {
-            t.advance()
-        }
+        self.track.advance();
+    }
+
+    // is_available returns true if other nodes have not written and false otherwise
+    fn is_available(&self, node_id: usize) -> bool {
+        assert!(node_id < self.num_nodes);
+        let curr = self.track.read();
+        let mut node_mask = BitVec::from_elem(self.num_nodes, false);
+        node_mask.set(node_id, true);
+        curr.none() || curr == node_mask
+    }
+
+    // write writes a new bitvec to the curret index of the track
+    fn write(&mut self, state: BitVec) {
+        assert!(state.len() == self.track.read().len());
+        self.track.write(state);
     }
 }
 
@@ -201,14 +219,14 @@ mod tests {
     use super::super::generators::Deterministic;
 
     #[test]
-    fn Client_packet_generation() {
+    fn client_packet_generation() {
         let mut c = Client::new(Deterministic::new(0.5), 1.0, vec![1]);
         assert!(c.tick().is_none());
         assert!(c.tick().is_some());
     }
 
     #[test]
-    fn Server_packet_delivery() {
+    fn server_packet_delivery() {
         let mut s = Server::new(1.0, 0.5, None);
         s.enqueue(Packet {
             destination_id: 0,
@@ -234,41 +252,16 @@ mod tests {
     }
 
     #[test]
-    fn Server_packet_dropped() {
-        let mut s = Server::new(1.0, 1.0, Some(1));
-        s.enqueue(Packet {
-            destination_id: 0,
-            time_generated: 0,
-            length: 1,
-        });
-        s.enqueue(Packet {
-            destination_id: 0,
-            time_generated: 0,
-            length: 1,
-        });
-
-        s.tick();
-        assert_eq!(s.statistics.packets_processed, 1);
-        assert_eq!(s.statistics.packets_dropped, 1);
-    }
-
-    #[test]
-    fn Server_idle_count() {
-        let mut s = Server::new(1.0, 1.0, Some(1));
-
-        s.tick();
-        assert_eq!(s.statistics.idle_count, 1);
-
-        s.tick();
-        assert_eq!(s.statistics.idle_count, 2);
-
-        s.enqueue(Packet {
-            destination_id: 0,
-            time_generated: 0,
-            length: 1,
-        });
-        s.tick();
-        assert_eq!(s.statistics.idle_count, 2);
-        assert_eq!(s.statistics.packets_processed, 1);
+    fn test_medium() {
+        let num_nodes: usize = 8;
+        let mut med = Medium::new(num_nodes, 2);
+        med.write(BitVec::from_bytes(&[0b10010000]));
+        assert!(!med.is_available(3));
+        med.write(BitVec::from_bytes(&[0b00010000]));
+        assert!(med.is_available(3));
+        med.tick();
+        assert!(med.is_available(1));
+        med.tick();
+        assert!(med.is_available(3));
     }
 }

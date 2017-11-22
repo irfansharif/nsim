@@ -184,7 +184,7 @@ fn main() {
         // TODO(irfansharif): Look at and try to use smart pointers, share link ownership with
         // Clients and the Server such that the main loop body simply ticks all participants instead of
         // additionally shuffling data around.
-        for (_, client) in clients.iter_mut().enumerate() {
+        for client in clients.iter_mut() {
             if let Some(dest) = client.tick() {
                 server.enqueue(Packet {
                     time_generated: i,

@@ -1,24 +1,24 @@
 pub struct CircularBuffer<T: Clone> {
-    vec: Vec<Option<T>>,
+    vec: Vec<T>,
     idx: usize,
 }
 
 impl<T: Clone> CircularBuffer<T> {
-    pub fn new(size: usize) -> CircularBuffer<T> {
+    pub fn new(size: usize, default: T) -> CircularBuffer<T> {
         assert!(size > 0);
 
         CircularBuffer {
-            vec: vec![None; size],
+            vec: vec![default; size],
             idx: 0,
         }
     }
 
-    pub fn read(&self) -> Option<T> {
+    pub fn read(&self) -> T {
         self.vec[self.idx].clone()
     }
 
     pub fn write(&mut self, t: T) {
-        self.vec[self.idx] = Some(t)
+        self.vec[self.idx] = t
     }
 
     pub fn advance(&mut self) {
@@ -28,19 +28,19 @@ impl<T: Clone> CircularBuffer<T> {
 
 #[test]
 fn test_cbuffer() {
-    let mut c: CircularBuffer<u32> = CircularBuffer::new(2);
+    let mut c: CircularBuffer<u32> = CircularBuffer::new(2, 0);
 
-    assert_eq!(c.read(), None);
-
-    c.write(0);
-    assert_eq!(c.read(), Some(0));
-
-    c.advance();
-    assert_eq!(c.read(), None);
+    assert_eq!(c.read(), 0);
 
     c.write(1);
-    assert_eq!(c.read(), Some(1));
+    assert_eq!(c.read(), 1);
 
     c.advance();
-    assert_eq!(c.read(), Some(0));
+    assert_eq!(c.read(), 0);
+
+    c.write(1);
+    assert_eq!(c.read(), 1);
+
+    c.advance();
+    assert_eq!(c.read(), 1);
 }

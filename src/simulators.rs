@@ -91,16 +91,26 @@ impl ServerStatistics {
     }
 }
 
+enum ServerState {
+    Idle,
+    Sensing {counter: u32, isbusy: bool},
+    Transmitting,
+    Waiting {counter: u32, wait_time: u32},
+}
+
 // Server stores packets in a queue and processes them.
 pub struct Server {
     queue: VecDeque<Packet>,
     buffer_limit: Option<usize>,
     resolution: f64,
     pub statistics: ServerStatistics,
+    state: ServerState,
     // Processing variables
     pspeed: f64,
     currently_processing: Option<Packet>,
     bits_processed: f64,
+    retries: u32,
+    total_delay: f64,
 }
 
 impl Server {
@@ -111,9 +121,12 @@ impl Server {
             buffer_limit: buffer_limit,
             resolution: resolution,
             statistics: ServerStatistics::new(),
+            state: ServerState::Idle,
             pspeed: pspeed,
             currently_processing: None,
             bits_processed: 0.0,
+            retries: 0,
+            total_delay: 0.0,
         }
     }
 
@@ -140,26 +153,72 @@ impl Server {
         match self.currently_processing.clone() {
             // TODO(irfansharif): CSMA/CD FSM.
             Some(p) => {
-                self.bits_processed += self.pspeed / self.resolution;
-                if (self.bits_processed as u32) < p.length {
-                    return None;
-                }
-                self.currently_processing = None;
-                self.bits_processed = 0.0;
-                self.statistics.packets_processed += 1;
+                self.state = match self.state {
+                    ServerState::Sensing{counter, isbusy} => {
+                        let counter = counter + 1;
+                        if counter == 96 && isbusy {
+                            if self.retries > 10 {
+                                //TODO: some sort of error
+                                ServerState::Idle
+                            } else {
+                                self.retries += 1;
+                                let rand: u32 = thread_rng().gen_range(0, 2u32.pow(self.retries)-1);
+                                let wait_time: u32 = rand * 512/10;
+                                ServerState::Waiting{counter: 0, wait_time:wait_time}
+                            }
+                        } else if counter == 96 && !isbusy {
+                            ServerState::Transmitting
+                        } else {
+                            let isbusy = false || isbusy;
+                            ServerState::Sensing{counter, isbusy}
+                        }
+                    }
+                    ServerState::Transmitting => {
+                        self.bits_processed += self.pspeed / self.resolution;
+                        if (self.bits_processed as u32) < p.length {
+                            //TODO: code for checking collision
+
+                            //if collision
+                            if self.retries > 10 {
+                                //TODO: some sort of error
+                                ServerState::Idle;
+                            } else {
+                                self.retries += 1;
+                                let rand: u32 = thread_rng().gen_range(0, 2u32.pow(self.retries)-1);
+                                let wait_time: u32 = rand * 512/10;
+                                ServerState::Waiting{counter: 0, wait_time:wait_time};
+                            }
+                        }
+                        self.currently_processing = None;
+                        self.bits_processed = 0.0;
+                        self.statistics.packets_processed += 1;
+                        ServerState::Transmitting
+                    }
+                    ServerState::Waiting{counter, wait_time} => {
+                        if counter < wait_time {
+                            let counter = counter + 1;
+                            ServerState::Waiting{counter, wait_time}
+                        } else {
+                            ServerState::Sensing{counter: 0, isbusy: false}
+                        }
+                    }
+
+                    _ => panic!("Invaild State")
+                };
+                self.total_delay += 1.0;
                 Some(p)
             }
             None => {
                 match self.queue.pop_front() {
                     Some(p) => {
-                        self.currently_processing = Some(p.clone());
-                        self.bits_processed += self.pspeed / self.resolution;
-                        if (self.bits_processed as u32) < p.length {
-                            return None;
-                        }
-                        self.currently_processing = None;
-                        self.bits_processed = 0.0;
-                        self.statistics.packets_processed += 1;
+                        self.retries = 0;
+                        self.total_delay = 0.0;
+                        self.state = match self.state {
+                            ServerState::Idle => {
+                                ServerState::Sensing{counter:0, isbusy:false}
+                            }
+                            _ => panic!("Invaild State")
+                        };
                         Some(p)
                     }
                     None => None,

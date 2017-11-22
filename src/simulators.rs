@@ -153,24 +153,24 @@ impl Server {
         match self.currently_processing.clone() {
             // TODO(irfansharif): CSMA/CD FSM.
             Some(p) => {
-                self.state = match self.state {
+                match self.state {
                     ServerState::Sensing{counter, busy} => {
                         let counter = counter + 1;
                         if counter == 96 && busy {
                             if self.retries > 10 {
                                 //TODO: some sort of error
-                                ServerState::Idle
+                                self.state = ServerState::Idle;
                             } else {
                                 self.retries += 1;
                                 let rand: u32 = thread_rng().gen_range(0, 2u32.pow(self.retries)-1);
                                 let wait_time: u32 = rand * 512/10;
-                                ServerState::Waiting{counter: 0, wait_time:wait_time}
+                                self.state = ServerState::Waiting{counter: 0, wait_time:wait_time};
                             }
                         } else if counter == 96 && !busy {
-                            ServerState::Transmitting
+                            self.state = ServerState::Transmitting;
                         } else {
                             let busy = false || busy;
-                            ServerState::Sensing{counter, busy}
+                            self.state = ServerState::Sensing{counter, busy};
                         }
                     }
                     ServerState::Transmitting => {
@@ -195,14 +195,14 @@ impl Server {
                         self.currently_processing = None;
                         self.bits_processed = 0.0;
                         self.statistics.packets_processed += 1;
-                        ServerState::Transmitting
+                        self.state = ServerState::Transmitting;
                     }
                     ServerState::Waiting{counter, wait_time} => {
                         if counter < wait_time {
                             let counter = counter + 1;
-                            ServerState::Waiting{counter, wait_time}
+                            self.state = ServerState::Waiting{counter, wait_time};
                         } else {
-                            ServerState::Sensing{counter: 0, busy: false}
+                            self.state = ServerState::Sensing{counter: 0, busy: false};
                         }
                     }
 

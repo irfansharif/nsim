@@ -93,7 +93,7 @@ impl ServerStatistics {
 
 enum ServerState {
     Idle,
-    Sensing {counter: u32, isbusy: bool},
+    Sensing {counter: u32, busy: bool},
     Transmitting,
     Waiting {counter: u32, wait_time: u32},
 }
@@ -154,9 +154,9 @@ impl Server {
             // TODO(irfansharif): CSMA/CD FSM.
             Some(p) => {
                 self.state = match self.state {
-                    ServerState::Sensing{counter, isbusy} => {
+                    ServerState::Sensing{counter, busy} => {
                         let counter = counter + 1;
-                        if counter == 96 && isbusy {
+                        if counter == 96 && busy {
                             if self.retries > 10 {
                                 //TODO: some sort of error
                                 ServerState::Idle
@@ -166,11 +166,11 @@ impl Server {
                                 let wait_time: u32 = rand * 512/10;
                                 ServerState::Waiting{counter: 0, wait_time:wait_time}
                             }
-                        } else if counter == 96 && !isbusy {
+                        } else if counter == 96 && !busy {
                             ServerState::Transmitting
                         } else {
-                            let isbusy = false || isbusy;
-                            ServerState::Sensing{counter, isbusy}
+                            let busy = false || busy;
+                            ServerState::Sensing{counter, busy}
                         }
                     }
                     ServerState::Transmitting => {
@@ -181,12 +181,15 @@ impl Server {
                             //if collision
                             if self.retries > 10 {
                                 //TODO: some sort of error
-                                ServerState::Idle;
+                                self.bits_processed = 0.0;
+                                self.state = ServerState::Idle;
+                                return None;
                             } else {
                                 self.retries += 1;
                                 let rand: u32 = thread_rng().gen_range(0, 2u32.pow(self.retries)-1);
                                 let wait_time: u32 = rand * 512/10;
-                                ServerState::Waiting{counter: 0, wait_time:wait_time};
+                                self.state = ServerState::Waiting{counter: 0, wait_time: wait_time};
+                                return None;
                             }
                         }
                         self.currently_processing = None;
@@ -199,7 +202,7 @@ impl Server {
                             let counter = counter + 1;
                             ServerState::Waiting{counter, wait_time}
                         } else {
-                            ServerState::Sensing{counter: 0, isbusy: false}
+                            ServerState::Sensing{counter: 0, busy: false}
                         }
                     }
 
@@ -215,7 +218,7 @@ impl Server {
                         self.total_delay = 0.0;
                         self.state = match self.state {
                             ServerState::Idle => {
-                                ServerState::Sensing{counter:0, isbusy:false}
+                                ServerState::Sensing{counter:0, busy:false}
                             }
                             _ => panic!("Invaild State")
                         };

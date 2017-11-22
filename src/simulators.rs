@@ -29,16 +29,18 @@ impl ClientStatistics {
 pub struct Client<G: Generator> {
     resolution: f64,
     ticker: u32,
+    packet_length: u32,
     generator: G,
     statistics: ClientStatistics,
 }
 
 impl<G: Generator> Client<G> {
     // Client::new seeds the ticker using the provided generator.
-    pub fn new(generator: G, resolution: f64) -> Self {
+    pub fn new(generator: G, resolution: f64, packet_length: u32) -> Self {
         Client {
             resolution: resolution,
             ticker: generator.next_event(resolution),
+            packet_length: packet_length,
             generator: generator,
             statistics: ClientStatistics::new(),
         }
@@ -50,21 +52,27 @@ impl<G: Generator> Client<G> {
     //
     // We're careful to check if self.ticker == 0 before decrementing because the parametrized
     // generator may very well return 0 (see top-level comment in src/generators.rs).
-    pub fn tick(&mut self) -> bool {
+    pub fn tick(&mut self, curr_time: u32) -> Option<Packet> {
         // TODO(irfansharif): Resolution mismatch; no possibility of generating multiple packets.
         if self.ticker == 0 {
             self.statistics.packets_generated += 1;
             self.ticker = self.generator.next_event(self.resolution);
-            return true;
+            return Some(Packet {
+                time_generated: curr_time,
+                length: self.packet_length,
+            });
         }
 
         self.ticker -= 1;
         if self.ticker == 0 {
             self.statistics.packets_generated += 1;
             self.ticker = self.generator.next_event(self.resolution);
-            true
+            Some(Packet {
+                time_generated: curr_time,
+                length: self.packet_length,
+            })
         } else {
-            false
+            None
         }
     }
 
@@ -88,13 +96,15 @@ impl ServerStatistics {
 
 enum ServerState {
     Idle,
-    Sensing {counter: u32, busy: bool},
+    Sensing { counter: u32, busy: bool },
     Transmitting,
-    Waiting {counter: u32, wait_time: u32},
+    Waiting { counter: u32, wait_time: u32 },
 }
 
 // Server stores packets in a queue and processes them.
-pub struct Server {
+pub struct Server<G: Generator> {
+    id: usize,
+    client: Client<G>,
     queue: VecDeque<Packet>,
     buffer_limit: Option<usize>,
     resolution: f64,
@@ -105,13 +115,20 @@ pub struct Server {
     currently_processing: Option<Packet>,
     bits_processed: f64,
     retries: u32,
-    total_delay: f64,
 }
 
-impl Server {
+impl<G: Generator> Server<G> {
     // Server::new returns a Server with the specified buffer limit, if any.
-    pub fn new(resolution: f64, pspeed: f64, buffer_limit: Option<usize>) -> Self {
+    pub fn new(
+        resolution: f64,
+        pspeed: f64,
+        buffer_limit: Option<usize>,
+        id: usize,
+        client: Client<G>,
+    ) -> Self {
         Server {
+            id: id,
+            client: client,
             queue: VecDeque::new(),
             buffer_limit: buffer_limit,
             resolution: resolution,
@@ -121,7 +138,6 @@ impl Server {
             currently_processing: None,
             bits_processed: 0.0,
             retries: 0,
-            total_delay: 0.0,
         }
     }
 
@@ -144,12 +160,20 @@ impl Server {
     // Server.tick checks to see if a packet is currently being processed, and if so,
     // increments Server.bits_processed, and if the resulting sum is equal to the bits
     // in the packet, then it returns the packet and resets the state of Server.
-    pub fn tick(&mut self) -> Option<Packet> {
+    pub fn tick(
+        &mut self,
+        local_state: &mut BitVec,
+        medium: &Medium,
+        curr_tick: u32,
+    ) -> Option<Packet> {
+        if let Some(p) = self.client.tick(curr_tick) {
+            self.enqueue(p);
+        }
         match self.currently_processing.clone() {
             // TODO(irfansharif): CSMA/CD FSM.
             Some(p) => {
                 match self.state {
-                    ServerState::Sensing{counter, busy} => {
+                    ServerState::Sensing { counter, busy } => {
                         let counter = counter + 1;
                         if counter == 96 && busy {
                             if self.retries > 10 {
@@ -157,23 +181,24 @@ impl Server {
                                 self.state = ServerState::Idle;
                             } else {
                                 self.retries += 1;
-                                let rand: u32 = thread_rng().gen_range(0, 2u32.pow(self.retries)-1);
-                                let wait_time: u32 = rand * 512/10;
-                                self.state = ServerState::Waiting{counter: 0, wait_time:wait_time};
+                                let rand: u32 =
+                                    thread_rng().gen_range(0, 2u32.pow(self.retries) - 1);
+                                let wait_time: u32 = rand * 512;
+                                self.state = ServerState::Waiting {
+                                    counter: 0,
+                                    wait_time: wait_time,
+                                };
                             }
                         } else if counter == 96 && !busy {
                             self.state = ServerState::Transmitting;
                         } else {
-                            let busy = false || busy;
-                            self.state = ServerState::Sensing{counter, busy};
+                            let busy = medium.is_available(self.id);
+                            self.state = ServerState::Sensing { counter, busy };
                         }
                     }
                     ServerState::Transmitting => {
                         self.bits_processed += self.pspeed / self.resolution;
-                        if (self.bits_processed as u32) < p.length {
-                            //TODO: code for checking collision
-
-                            //if collision
+                        if (self.bits_processed as u32) < p.length && !medium.is_available(self.id) {
                             if self.retries > 10 {
                                 //TODO: some sort of error
                                 self.bits_processed = 0.0;
@@ -181,41 +206,53 @@ impl Server {
                                 return None;
                             } else {
                                 self.retries += 1;
-                                let rand: u32 = thread_rng().gen_range(0, 2u32.pow(self.retries)-1);
-                                let wait_time: u32 = rand * 512/10;
-                                self.state = ServerState::Waiting{counter: 0, wait_time: wait_time};
+                                let rand: u32 =
+                                    thread_rng().gen_range(0, 2u32.pow(self.retries) - 1);
+                                let wait_time: u32 = rand * 512;
+                                self.state = ServerState::Waiting {
+                                    counter: 0,
+                                    wait_time: wait_time,
+                                };
                                 return None;
                             }
+                        } else if self.bits_processed as u32 >= p.length {
+                            self.currently_processing = None;
+                            self.bits_processed = 0.0;
+                            self.statistics.packets_processed += 1;
+                            self.state = ServerState::Transmitting;
+                        } else {
+                            local_state.set(self.id, true);
+                            return None;
                         }
-                        self.currently_processing = None;
-                        self.bits_processed = 0.0;
-                        self.statistics.packets_processed += 1;
-                        self.state = ServerState::Transmitting;
                     }
-                    ServerState::Waiting{counter, wait_time} => {
+                    ServerState::Waiting { counter, wait_time } => {
                         if counter < wait_time {
                             let counter = counter + 1;
-                            self.state = ServerState::Waiting{counter, wait_time};
+                            self.state = ServerState::Waiting { counter, wait_time };
                         } else {
-                            self.state = ServerState::Sensing{counter: 0, busy: false};
+                            self.state = ServerState::Sensing {
+                                counter: 0,
+                                busy: false,
+                            };
                         }
                     }
 
-                    _ => panic!("Invaild State")
+                    _ => panic!("Invalid State"),
                 };
-                self.total_delay += 1.0;
                 Some(p)
             }
             None => {
                 match self.queue.pop_front() {
                     Some(p) => {
                         self.retries = 0;
-                        self.total_delay = 0.0;
                         self.state = match self.state {
                             ServerState::Idle => {
-                                ServerState::Sensing{counter:0, busy:false}
+                                ServerState::Sensing {
+                                    counter: 0,
+                                    busy: false,
+                                }
                             }
-                            _ => panic!("Invalid State")
+                            _ => panic!("Invalid State"),
                         };
                         Some(p)
                     }
@@ -232,20 +269,6 @@ impl Server {
     }
 }
 
-pub struct Node<G: Generator> {
-    server: Server,
-    client: Client<G>,
-}
-
-impl<G: Generator> Node<G> {
-    fn new(client: Client<G>, server: Server) -> Self {
-        Node {
-            server,
-            client,
-        }
-    }
-}
-
 // Medium contains a circular buffer, with a bit vector of size n at each index
 //
 // The bit vectors represent the n possible writes that n nodes can perform at one time
@@ -255,17 +278,14 @@ pub struct Medium {
 }
 
 impl Medium {
-    fn new(n: usize, csize: usize) -> Medium {
+    pub fn new(n: usize, csize: usize) -> Medium {
         Medium {
-            track: CircularBuffer::new(
-                csize,
-                BitVec::from_elem(n, false),
-            ),
+            track: CircularBuffer::new(csize, BitVec::from_elem(n, false)),
             num_nodes: n,
         }
     }
 
-    fn tick(&mut self) {
+    pub fn tick(&mut self) {
         self.track.advance();
     }
 
@@ -279,7 +299,7 @@ impl Medium {
     }
 
     // write writes a new bitvec to the curret index of the track
-    fn write(&mut self, state: BitVec) {
+    pub fn write(&mut self, state: BitVec) {
         assert!(state.len() == self.track.read().len());
         self.track.write(state);
     }

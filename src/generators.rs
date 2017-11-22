@@ -24,7 +24,7 @@ pub struct Markov {
 }
 
 impl Markov {
-    pub fn new(lambda: f64) -> Markov {
+    pub fn new(lambda: f64) -> Self {
         Markov { exp: Exp::new(lambda) }
     }
 }
@@ -40,7 +40,7 @@ pub struct Deterministic {
 }
 
 impl Deterministic {
-    pub fn new(rate: f64) -> Deterministic {
+    pub fn new(rate: f64) -> Self {
         Deterministic { rate: rate }
     }
 }

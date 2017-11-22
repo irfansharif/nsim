@@ -8,7 +8,6 @@ use cbuffer::CircularBuffer;
 #[derive(Clone)]
 pub struct Packet {
     pub time_generated: u32,
-    pub destination_id: u32,
     pub length: u32,
 }
 
@@ -30,19 +29,16 @@ impl ClientStatistics {
 pub struct Client<G: Generator> {
     resolution: f64,
     ticker: u32,
-    peers: Vec<u32>,
     generator: G,
     statistics: ClientStatistics,
 }
 
 impl<G: Generator> Client<G> {
     // Client::new seeds the ticker using the provided generator.
-    pub fn new(generator: G, resolution: f64, peers: Vec<u32>) -> Client<G> {
-        assert!(peers.len() != 0);
+    pub fn new(generator: G, resolution: f64) -> Self {
         Client {
             resolution: resolution,
             ticker: generator.next_event(resolution),
-            peers: peers,
             generator: generator,
             statistics: ClientStatistics::new(),
         }
@@ -54,21 +50,21 @@ impl<G: Generator> Client<G> {
     //
     // We're careful to check if self.ticker == 0 before decrementing because the parametrized
     // generator may very well return 0 (see top-level comment in src/generators.rs).
-    pub fn tick(&mut self) -> Option<u32> {
+    pub fn tick(&mut self) -> bool {
         // TODO(irfansharif): Resolution mismatch; no possibility of generating multiple packets.
         if self.ticker == 0 {
             self.statistics.packets_generated += 1;
             self.ticker = self.generator.next_event(self.resolution);
-            return Some(thread_rng().choose(&self.peers).unwrap().to_owned());
+            return true;
         }
 
         self.ticker -= 1;
         if self.ticker == 0 {
             self.statistics.packets_generated += 1;
             self.ticker = self.generator.next_event(self.resolution);
-            Some(thread_rng().choose(&self.peers).unwrap().to_owned())
+            true
         } else {
-            None
+            false
         }
     }
 
@@ -114,7 +110,7 @@ pub struct Server {
 
 impl Server {
     // Server::new returns a Server with the specified buffer limit, if any.
-    pub fn new(resolution: f64, pspeed: f64, buffer_limit: Option<usize>) -> Server {
+    pub fn new(resolution: f64, pspeed: f64, buffer_limit: Option<usize>) -> Self {
         Server {
             queue: VecDeque::new(),
             buffer_limit: buffer_limit,
@@ -219,7 +215,7 @@ impl Server {
                             ServerState::Idle => {
                                 ServerState::Sensing{counter:0, busy:false}
                             }
-                            _ => panic!("Invaild State")
+                            _ => panic!("Invalid State")
                         };
                         Some(p)
                     }
@@ -233,6 +229,20 @@ impl Server {
     pub fn packets_processed(&self) -> u32 {
         self.statistics.packets_processed
 
+    }
+}
+
+pub struct Node<G: Generator> {
+    server: Server,
+    client: Client<G>,
+}
+
+impl<G: Generator> Node<G> {
+    fn new(client: Client<G>, server: Server) -> Self {
+        Node {
+            server,
+            client,
+        }
     }
 }
 
@@ -282,21 +292,19 @@ mod tests {
 
     #[test]
     fn client_packet_generation() {
-        let mut c = Client::new(Deterministic::new(0.5), 1.0, vec![1]);
-        assert!(c.tick().is_none());
-        assert!(c.tick().is_some());
+        let mut c = Client::new(Deterministic::new(0.5), 1.0);
+        assert!(!c.tick());
+        assert!(c.tick());
     }
 
     #[test]
     fn server_packet_delivery() {
         let mut s = Server::new(1.0, 0.5, None);
         s.enqueue(Packet {
-            destination_id: 0,
             time_generated: 0,
             length: 1,
         });
         s.enqueue(Packet {
-            destination_id: 0,
             time_generated: 0,
             length: 1,
         });

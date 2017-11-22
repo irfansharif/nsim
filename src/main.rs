@@ -172,7 +172,6 @@ fn main() {
             Client::new(
                 Markov::new(f64::from(params.rate)),
                 params.resolution,
-                (0..params.ncount).filter(|&j| i != j).collect(),
             )
         })
         .collect();
@@ -184,15 +183,7 @@ fn main() {
         // TODO(irfansharif): Look at and try to use smart pointers, share link ownership with
         // Clients and the Server such that the main loop body simply ticks all participants instead of
         // additionally shuffling data around.
-        for client in clients.iter_mut() {
-            if let Some(dest) = client.tick() {
-                server.enqueue(Packet {
-                    time_generated: i,
-                    destination_id: dest,
-                    length: params.psize,
-                });
-            }
-        }
+        
         if let Some(p) = server.tick() {
             // We record the time it took for the processed packet to get processed.
             pstats.add(f64::from(i - p.time_generated) / params.resolution);

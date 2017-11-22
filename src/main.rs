@@ -171,14 +171,18 @@ fn main() {
     let ticks = params.duration * params.resolution as u32;
     let mut servers: Vec<_> = (0..params.ncount)
         .map(|i| {
-            let client = Client::new(Markov::new(f64::from(params.rate)), params.resolution, params.psize);
+            let client = Client::new(
+                Markov::new(f64::from(params.rate)),
+                params.resolution,
+                params.psize,
+            );
             Server::new(params.resolution, f64::from(params.lspeed), None, i, client)
         })
         .collect();
 
     let mut pstats = OnlineStats::new();
 
-    // Hardcode a 25.6 (rounding up to 26) microsecond delay 
+    // Hardcode a 25.6 (rounding up to 26) microsecond delay
     let mut medium = Medium::new(params.ncount, 26);
 
     for i in 0..ticks {
@@ -186,7 +190,7 @@ fn main() {
         // Clients and the Server such that the main loop body simply ticks all participants instead of
         // additionally shuffling data around.
         let mut local_state = BitVec::from_elem(params.ncount, false);
-        
+
         // TODO: Be able to handle multiple packet output
         // With a packet length of 1000, its impossible for more than 1 packet to be outputted at a given tick
         let mut packet: Packet;
@@ -213,8 +217,12 @@ fn main() {
     //     "\t Packets generated:                 {} packets",
     //     packets_generated
     // );
-    // println!(
-    //     "\t Packets processed:                 {} packets",
-    //     server.packets_processed()
-    // );
+    let packets_processed: u32 = servers
+        .iter()
+        .map(|server| server.packets_processed())
+        .sum();
+    println!(
+        "\t Packets processed:                 {} packets",
+        packets_processed
+    );
 }

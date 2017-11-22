@@ -5,7 +5,7 @@ use bit_vec::BitVec;
 use cbuffer::CircularBuffer;
 
 // Packet holds the value of the time unit that it was generated at, its length, and the id of its destination node.
-#[derive(Clone)]
+#[derive(Copy, Clone, PartialEq)]
 pub struct Packet {
     pub time_generated: u32,
     pub length: u32,
@@ -94,11 +94,23 @@ impl ServerStatistics {
     }
 }
 
+#[derive(PartialEq, Clone, Copy)]
 enum ServerState {
     Idle,
-    Sensing { counter: u32, busy: bool },
-    Transmitting,
-    Waiting { counter: u32, wait_time: u32 },
+    Sensing {
+        counter: u32,
+        busy: bool,
+        current_packet: Packet,
+    },
+    Transmitting {
+        bits_processed: f64,
+        current_packet: Packet,
+    },
+    Waiting {
+        counter: u32,
+        wait_time: u32,
+        current_packet: Packet,
+    }
 }
 
 // Server stores packets in a queue and processes them.
@@ -169,97 +181,124 @@ impl<G: Generator> Server<G> {
         if let Some(p) = self.client.tick(curr_tick) {
             self.enqueue(p);
         }
-        match self.currently_processing.clone() {
-            // TODO(irfansharif): CSMA/CD FSM.
-            Some(p) => {
-                match self.state {
-                    ServerState::Sensing { counter, busy } => {
-                        let counter = counter + 1;
-                        if counter == 96 && busy {
-                            if self.retries > 10 {
-                                //TODO: some sort of error
-                                self.state = ServerState::Idle;
-                            } else {
-                                self.retries += 1;
-                                let rand: u32 =
-                                    thread_rng().gen_range(0, 2u32.pow(self.retries) - 1);
-                                let wait_time: u32 = rand * 512;
-                                self.state = ServerState::Waiting {
-                                    counter: 0,
-                                    wait_time: wait_time,
-                                };
-                            }
-                        } else if counter == 96 && !busy {
-                            self.state = ServerState::Transmitting;
-                        } else {
-                            let busy = medium.is_available(self.id);
-                            self.state = ServerState::Sensing { counter, busy };
-                        }
-                    }
-                    ServerState::Transmitting => {
-                        self.bits_processed += self.pspeed / self.resolution;
-                        if (self.bits_processed as u32) < p.length && !medium.is_available(self.id) {
-                            if self.retries > 10 {
-                                //TODO: some sort of error
-                                self.bits_processed = 0.0;
-                                self.state = ServerState::Idle;
-                                return None;
-                            } else {
-                                self.retries += 1;
-                                let rand: u32 =
-                                    thread_rng().gen_range(0, 2u32.pow(self.retries) - 1);
-                                let wait_time: u32 = rand * 512;
-                                self.state = ServerState::Waiting {
-                                    counter: 0,
-                                    wait_time: wait_time,
-                                };
-                                return None;
-                            }
-                        } else if self.bits_processed as u32 >= p.length {
-                            self.currently_processing = None;
-                            self.bits_processed = 0.0;
-                            self.statistics.packets_processed += 1;
-                            self.state = ServerState::Transmitting;
-                        } else {
-                            local_state.set(self.id, true);
-                            return None;
-                        }
-                    }
-                    ServerState::Waiting { counter, wait_time } => {
-                        if counter < wait_time {
-                            let counter = counter + 1;
-                            self.state = ServerState::Waiting { counter, wait_time };
-                        } else {
-                            self.state = ServerState::Sensing {
+        match self.state {
+            ServerState::Idle => {
+                match self.queue.pop_front() {
+                    Some(p) => ServerState::Sensing {
+                        counter: 0,
+                        busy: false,
+                        current_packet: p,
+                    },
+                    None => ServerState::Idle,
+                };
+            }
+            ServerState::Sensing {
+                counter,
+                busy,
+                current_packet,
+            } => {
+                let counter = counter + 1;
+                if counter == 96 && busy {
+                    if self.retries > 10 {
+                        self.state = match self.queue.pop_front() {
+                            Some(p) => ServerState::Sensing {
                                 counter: 0,
                                 busy: false,
-                            };
-                        }
-                    }
-
-                    _ => panic!("Invalid State"),
-                };
-                Some(p)
-            }
-            None => {
-                match self.queue.pop_front() {
-                    Some(p) => {
-                        self.retries = 0;
-                        self.state = match self.state {
-                            ServerState::Idle => {
-                                ServerState::Sensing {
-                                    counter: 0,
-                                    busy: false,
-                                }
-                            }
-                            _ => panic!("Invalid State"),
+                                current_packet: p,
+                            },
+                            None => ServerState::Idle,
                         };
-                        Some(p)
+                    } else {
+                        self.retries += 1;
+                        let rand: u32 = thread_rng().gen_range(0, 2u32.pow(self.retries) - 1);
+                        let wait_time: u32 = rand * 512;
+                        self.state = ServerState::Waiting {
+                            counter: 0,
+                            wait_time: wait_time,
+                            current_packet,
+                        };
                     }
-                    None => None,
+                } else if counter == 96 && !busy {
+                    self.state = ServerState::Transmitting {
+                        bits_processed: 0.0,
+                        current_packet,
+                    };
+                    return None;
+                } else {
+                    self.state = ServerState::Sensing {
+                        counter,
+                        busy: medium.is_available(self.id),
+                        current_packet,
+                    };
                 }
             }
+            ServerState::Transmitting {
+                mut bits_processed,
+                current_packet,
+            } => {
+                if !medium.is_available(self.id) {
+                    if self.retries > 10 {
+                        self.state = match self.queue.pop_front() {
+                            Some(p) => ServerState::Sensing {
+                                counter: 0,
+                                busy: false,
+                                current_packet: p,
+                            },
+                            None => ServerState::Idle,
+                        };
+                    } else {
+                        self.retries += 1;
+                        let rand: u32 = thread_rng().gen_range(0, 2u32.pow(self.retries) - 1);
+                        let wait_time: u32 = rand * 512;
+                        self.state = ServerState::Waiting {
+                            counter: 0,
+                            wait_time: wait_time,
+                            current_packet,
+                        };
+                    }
+                }
+                bits_processed += self.pspeed / self.resolution;
+                local_state.set(self.id, true);
+                if (bits_processed as u32) >= current_packet.length {
+                    self.state = match self.queue.pop_front() {
+                        Some(p) => ServerState::Sensing {
+                            counter: 0,
+                            busy: false,
+                            current_packet: p,
+                        },
+                        None => ServerState::Idle,
+                    };
+                    self.statistics.packets_processed += 1;
+                    return Some(current_packet);
+                }
+                self.state = ServerState::Transmitting {
+                    bits_processed,
+                    current_packet,
+                };
+            }
+            ServerState::Waiting {
+                counter,
+                wait_time,
+                current_packet,
+            } => {
+                if counter < wait_time {
+                    let counter = counter + 1;
+                    self.state = ServerState::Waiting {
+                        counter,
+                        wait_time,
+                        current_packet,
+                    };
+                } else {
+                    self.state = ServerState::Sensing {
+                        counter: 0,
+                        busy: false,
+                        current_packet,
+                    };
+                }
+            }
+            _ => panic!("Invalid State"),
         }
+        None
     }
 
     // Server.packets_processed returns the number of packets processed by the Server thus far.

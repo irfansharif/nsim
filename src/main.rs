@@ -171,18 +171,14 @@ fn main() {
     let ticks = params.duration * params.resolution as u32;
     let mut servers: Vec<_> = (0..params.ncount)
         .map(|i| {
-            let client = Client::new(
-                Markov::new(f64::from(params.rate)),
-                params.resolution,
-                params.psize,
-            );
+            let client = Client::new(Markov::new(f64::from(params.rate)), params.resolution, params.psize);
             Server::new(params.resolution, f64::from(params.lspeed), None, i, client)
         })
         .collect();
 
     let mut pstats = OnlineStats::new();
 
-    // Hardcode a 25.6 (rounding up to 26) microsecond delay
+    // Hardcode a 25.6 (rounding up to 26) microsecond delay 
     let mut medium = Medium::new(params.ncount, 26);
 
     for i in 0..ticks {
@@ -190,13 +186,12 @@ fn main() {
         // Clients and the Server such that the main loop body simply ticks all participants instead of
         // additionally shuffling data around.
         let mut local_state = BitVec::from_elem(params.ncount, false);
-
+        
         // TODO: Be able to handle multiple packet output
         // With a packet length of 1000, its impossible for more than 1 packet to be outputted at a given tick
-        let mut packet: Packet;
         for server in servers.iter_mut() {
             if let Some(p) = server.tick(&mut local_state, &medium, i) {
-                packet = p;
+                pstats.add(f64::from(i - p.time_generated) / params.resolution);
             }
         }
         medium.write(local_state);
@@ -209,14 +204,14 @@ fn main() {
         pstats.mean(),
         pstats.stddev()
     );
-    // let packets_generated: u32 = clients
-    //     .iter()
-    //     .map(|client| client.packets_generated())
-    //     .sum();
-    // println!(
-    //     "\t Packets generated:                 {} packets",
-    //     packets_generated
-    // );
+    let packets_generated: u32 = servers
+        .iter()
+        .map(|server| server.packets_generated())
+        .sum();
+    println!(
+        "\t Packets generated:                 {} packets",
+        packets_generated
+    );
     let packets_processed: u32 = servers
         .iter()
         .map(|server| server.packets_processed())

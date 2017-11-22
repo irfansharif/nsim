@@ -5,7 +5,7 @@ use bit_vec::BitVec;
 use cbuffer::CircularBuffer;
 
 // Packet holds the value of the time unit that it was generated at, its length, and the id of its destination node.
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub struct Packet {
     pub time_generated: u32,
     pub length: u32,
@@ -94,7 +94,7 @@ impl ServerStatistics {
     }
 }
 
-#[derive(PartialEq, Clone, Copy)]
+#[derive(PartialEq, Clone, Copy, Debug)]
 enum ServerState {
     Idle,
     Sensing {
@@ -124,8 +124,6 @@ pub struct Server<G: Generator> {
     state: ServerState,
     // Processing variables
     pspeed: f64,
-    currently_processing: Option<Packet>,
-    bits_processed: f64,
     retries: u32,
 }
 
@@ -147,8 +145,6 @@ impl<G: Generator> Server<G> {
             statistics: ServerStatistics::new(),
             state: ServerState::Idle,
             pspeed: pspeed,
-            currently_processing: None,
-            bits_processed: 0.0,
             retries: 0,
         }
     }
@@ -184,12 +180,16 @@ impl<G: Generator> Server<G> {
         match self.state {
             ServerState::Idle => {
                 match self.queue.pop_front() {
-                    Some(p) => ServerState::Sensing {
-                        counter: 0,
-                        busy: false,
-                        current_packet: p,
+                    Some(p) => {
+                        self.state = ServerState::Sensing {
+                            counter: 0,
+                            busy: false,
+                            current_packet: p,
+                        }
                     },
-                    None => ServerState::Idle,
+                    None =>  {
+                        self.state = ServerState::Idle;
+                    },
                 };
             }
             ServerState::Sensing {
@@ -227,7 +227,7 @@ impl<G: Generator> Server<G> {
                 } else {
                     self.state = ServerState::Sensing {
                         counter,
-                        busy: medium.is_available(self.id),
+                        busy: !medium.is_available(self.id),
                         current_packet,
                     };
                 }
@@ -296,7 +296,6 @@ impl<G: Generator> Server<G> {
                     };
                 }
             }
-            _ => panic!("Invalid State"),
         }
         None
     }
@@ -304,7 +303,10 @@ impl<G: Generator> Server<G> {
     // Server.packets_processed returns the number of packets processed by the Server thus far.
     pub fn packets_processed(&self) -> u32 {
         self.statistics.packets_processed
+    }
 
+    pub fn packets_generated(&self) -> u32 {
+        self.client.packets_generated()
     }
 }
 
@@ -351,33 +353,94 @@ mod tests {
 
     #[test]
     fn client_packet_generation() {
-        let mut c = Client::new(Deterministic::new(0.5), 1.0);
-        assert!(!c.tick());
-        assert!(c.tick());
+        let mut c = Client::new(Deterministic::new(0.5), 1.0, 1);
+        assert!(c.tick(0).is_none());
+        assert!(c.tick(1).unwrap() == Packet { time_generated: 1, length: 1 });
     }
 
     #[test]
-    fn server_packet_delivery() {
-        let mut s = Server::new(1.0, 0.5, None);
-        s.enqueue(Packet {
-            time_generated: 0,
-            length: 1,
+    fn server_idle_to_sensing() {
+        let m = Medium::new(1, 1);
+        let mut c = Client::new(Deterministic::new(1.0), 1.0, 1);
+        let mut s = Server::new(1.0, 2.0, None, 0, c);
+        let mut state = BitVec::from_elem(1, false);
+        assert!(s.state == ServerState::Idle);
+        s.tick(&mut state, &m, 0);
+        println!("{:?}", s.state);
+        assert!(s.state == ServerState::Sensing{ 
+            counter: 0, 
+            busy: false, 
+            current_packet: Packet { time_generated: 0, length: 1 },
         });
-        s.enqueue(Packet {
-            time_generated: 0,
-            length: 1,
+    }
+
+    #[test]
+    fn server_idle_to_idle() {
+        let m = Medium::new(1, 1);
+        let mut c = Client::new(Deterministic::new(1.0), 2.0, 1);
+        let mut s = Server::new(1.0, 1.0, None, 0, c);
+        let mut state = BitVec::from_elem(1, false);
+        s.tick(&mut state, &m, 1);
+        assert!(s.state == ServerState::Idle);
+    }
+
+    #[test]
+    fn server_sensing_to_sensing() {
+        let m = Medium::new(1, 1);
+        let mut c = Client::new(Deterministic::new(100.0), 1.0, 1);
+        let mut s = Server {
+            id: 0,
+            client: c,
+            queue: VecDeque::new(),
+            buffer_limit: None,
+            resolution: 1.0,
+            statistics:ServerStatistics::new(),
+            state: ServerState::Sensing {
+                counter: 5,
+                busy: false,
+                current_packet: Packet { time_generated: 10, length: 1},
+            },
+            pspeed: 1.0,
+            retries: 0,
+        };
+        let mut state = BitVec::from_elem(1, false);
+        s.tick(&mut state, &m, 10);
+        assert!(s.state == ServerState::Sensing {
+            counter: 6,
+            busy: false,
+            current_packet: Packet { time_generated: 10, length: 1},
         });
-        s.tick();
-        assert_eq!(s.statistics.packets_processed, 0);
+    }
 
-        s.tick();
-        assert_eq!(s.statistics.packets_processed, 1);
-
-        s.tick();
-        assert_eq!(s.statistics.packets_processed, 1);
-
-        s.tick();
-        assert_eq!(s.statistics.packets_processed, 2);
+    #[test]
+    fn server_sensing_to_busy() {
+        let mut m = Medium::new(2, 1);
+        let mut test_vec = BitVec::from_elem(2, false);
+        test_vec.set(1, true);
+        m.write(test_vec);
+        let mut c = Client::new(Deterministic::new(100.0), 1.0, 1);
+        let mut s = Server {
+            id: 0,
+            client: c,
+            queue: VecDeque::new(),
+            buffer_limit: None,
+            resolution: 1.0,
+            statistics:ServerStatistics::new(),
+            state: ServerState::Sensing {
+                counter: 5,
+                busy: false,
+                current_packet: Packet { time_generated: 10, length: 1},
+            },
+            pspeed: 1.0,
+            retries: 0,
+        };
+        let mut state = BitVec::from_elem(2, false);
+        s.tick(&mut state, &m, 10);
+        assert!(s.state == ServerState::Sensing {
+            counter: 6,
+            busy: true,
+            current_packet: Packet { time_generated: 10, length: 1},
+        });
     }
 
     #[test]
@@ -386,7 +449,11 @@ mod tests {
         let mut med = Medium::new(num_nodes, 2);
         med.write(BitVec::from_bytes(&[0b10010000]));
         assert!(!med.is_available(3));
+        med.write(BitVec::from_bytes(&[0b10000000]));
+        assert!(!med.is_available(3));
         med.write(BitVec::from_bytes(&[0b00010000]));
+        assert!(med.is_available(3));
+        med.write(BitVec::from_bytes(&[0b00000000]));
         assert!(med.is_available(3));
         med.tick();
         assert!(med.is_available(1));

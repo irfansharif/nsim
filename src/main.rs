@@ -35,7 +35,7 @@ impl fmt::Display for Params {
         writeln!(f, "\t Packet size:           {} bits", self.psize).unwrap();
         writeln!(f, "\t LAN speed:             {} bits/s", self.lspeed).unwrap();
         writeln!(f, "\t Simulation duration:   {}s", self.duration).unwrap();
-        writeln!(f, "\t Server count:            {} Clients", self.ncount).unwrap();
+        writeln!(f, "\t Server count:          {} Clients", self.ncount).unwrap();
         writeln!(f, "\t CSMA/CD Persistence:   {}", self.persistence).unwrap();
         writeln!(f, "\t Resolution:            1µs").unwrap(); // TODO(irfansharif).
         write!(
@@ -170,15 +170,21 @@ fn main() {
 
     let ticks = params.duration * params.resolution as u32;
     let mut servers: Vec<_> = (0..params.ncount)
-        .map(|i| {
-            let client = Client::new(Markov::new(f64::from(params.rate)), params.resolution, params.psize);
-            Server::new(params.resolution, f64::from(params.lspeed), None, i, client)
+        .map(|id| {
+            Server::new(
+                id,
+                Markov::new(f64::from(params.rate)),
+                params.psize,
+                params.resolution,
+                f64::from(params.lspeed),
+                params.persistence,
+            )
         })
         .collect();
 
     let mut pstats = OnlineStats::new();
 
-    // Hardcode a 25.6 (rounding up to 26) microsecond delay 
+    // Hardcode a 25.6 (rounding up to 26) microsecond delay
     let mut medium = Medium::new(params.ncount, 26);
 
     for i in 0..ticks {
@@ -186,7 +192,6 @@ fn main() {
         // Clients and the Server such that the main loop body simply ticks all participants instead of
         // additionally shuffling data around.
         let mut local_state = BitVec::from_elem(params.ncount, false);
-        
         // TODO: Be able to handle multiple packet output
         // With a packet length of 1000, its impossible for more than 1 packet to be outputted at a given tick
         for server in servers.iter_mut() {
@@ -219,5 +224,10 @@ fn main() {
     println!(
         "\t Packets processed:                 {} packets",
         packets_processed
+    );
+    let packets_dropped: u32 = servers.iter().map(|server| server.packets_dropped()).sum();
+    println!(
+        "\t Packets dropped:                   {} packets",
+        packets_dropped
     );
 }

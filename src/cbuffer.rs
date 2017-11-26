@@ -21,26 +21,28 @@ impl<T: Clone> CircularBuffer<T> {
         self.vec[self.idx] = t
     }
 
-    pub fn advance(&mut self) {
+    pub fn tick(&mut self) {
         self.idx = (self.idx + 1) % self.vec.len();
     }
 }
 
-#[test]
-fn test_cbuffer() {
-    let mut c: CircularBuffer<u32> = CircularBuffer::new(2, 0);
+mod tests {
+    #[test]
+    fn test_cbuffer() {
+        let mut c: super::CircularBuffer<u32> = super::CircularBuffer::new(2, 0);
 
-    assert_eq!(c.read(), 0);
+        assert_eq!(c.read(), 0);
 
-    c.write(1);
-    assert_eq!(c.read(), 1);
+        c.write(1);
+        assert_eq!(c.read(), 1);
 
-    c.advance();
-    assert_eq!(c.read(), 0);
+        c.tick();
+        assert_eq!(c.read(), 0);
 
-    c.write(1);
-    assert_eq!(c.read(), 1);
+        c.write(1);
+        assert_eq!(c.read(), 1);
 
-    c.advance();
-    assert_eq!(c.read(), 1);
+        c.tick();
+        assert_eq!(c.read(), 1);
+    }
 }

@@ -91,6 +91,10 @@ enum ServerState {
         bits_processed: f64,
         current_packet: Packet,
     },
+    Jamming {
+        counter: u32,
+        current_packet: Packet,
+    },
     Waiting {
         counter: u32,
         wait_time: u32,
@@ -233,6 +237,18 @@ impl<G: Generator> Server<G> {
                         };
                         break;
                     } else {
+                        self.state = ServerState::Jamming {
+                            counter: 48,
+                            current_packet,
+                        }
+                    }
+                },
+                ServerState::Jamming {
+                    mut counter,
+                    current_packet,
+                } => {
+                    counter -= 1;
+                    if counter == 0 {
                         self.retries += 1;
                         if self.retries > 10 {
                             self.state = ServerState::Idle;
@@ -246,8 +262,13 @@ impl<G: Generator> Server<G> {
                                 current_packet,
                             };
                         }
+                    } else {
+                        self.state = ServerState::Jamming {
+                            counter,
+                            current_packet,
+                        }
                     }
-                }
+                },
                 ServerState::Waiting {
                     counter,
                     wait_time,

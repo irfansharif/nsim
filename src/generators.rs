@@ -1,6 +1,5 @@
-extern crate rand;
-
-use self::rand::distributions::{Exp, IndependentSample};
+use rand::distributions::{Exp, IndependentSample};
+use rand::thread_rng;
 
 // Generators generate events, the generation of which is dictated by which specific Generator is
 // used. The underlying RNG distribution, if configured (consider λ in an exponentially distributed
@@ -25,14 +24,14 @@ pub struct Markov {
 }
 
 impl Markov {
-    pub fn new(lambda: f64) -> Markov {
+    pub fn new(lambda: f64) -> Self {
         Markov { exp: Exp::new(lambda) }
     }
 }
 
 impl Generator for Markov {
     fn next_event(&self, resolution: f64) -> u32 {
-        (self.exp.ind_sample(&mut rand::thread_rng()) * resolution) as u32
+        (self.exp.ind_sample(&mut thread_rng()) * resolution) as u32
     }
 }
 
@@ -41,7 +40,7 @@ pub struct Deterministic {
 }
 
 impl Deterministic {
-    pub fn new(rate: f64) -> Deterministic {
+    pub fn new(rate: f64) -> Self {
         Deterministic { rate: rate }
     }
 }

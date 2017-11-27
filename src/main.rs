@@ -17,6 +17,7 @@ const DEFAULT_LSPEED: u32 = 1_000_000;
 const DEFAULT_DURATION: u32 = 5;
 const DEFAULT_SERVER_COUNT: usize = 10;
 const DEFAULT_PERSISTENCE: bool = false;
+const DEFAULT_REPORT_GEN: bool = false;
 
 struct Params {
     rate: u32,
@@ -26,6 +27,7 @@ struct Params {
     ncount: usize,
     persistence: bool,
     resolution: f64,
+    gen_report: bool,
 }
 
 impl fmt::Display for Params {
@@ -99,6 +101,14 @@ fn construct_options() -> Options {
             DEFAULT_PERSISTENCE
         ),
     );
+    opts.optflag(
+        "",
+        "gen_report",
+        &format!(
+            "Generates the lab report (def: {:?})",
+            DEFAULT_REPORT_GEN,
+        ),
+    );
     opts
 }
 
@@ -128,6 +138,11 @@ fn parse_params(matches: &getopts::Matches) -> Params {
     } else {
         DEFAULT_PERSISTENCE
     };
+    let gen_report = if matches.opt_present("gen_report") {
+        true
+    } else {
+        false
+    };
     let resolution = 1e6; // TODO(irfansharif).
 
     Params {
@@ -138,12 +153,65 @@ fn parse_params(matches: &getopts::Matches) -> Params {
         ncount,
         persistence,
         resolution,
+        gen_report,
     }
 }
 
 fn print_usage(program: &str, opts: &Options) {
     let brief = format!("Usage: {} [Options]", program);
     print!("{}", opts.usage(&brief));
+}
+
+fn gen_report() {
+    let resolution = 1e6;
+    let pspeed = 1e6;
+    let psize = 8000;
+    let ticks = (resolution * 10.0) as u32;
+
+    // Question 1: Non persistent
+    let n_vals = vec![4, 6, 8, 10, 12, 14, 16];
+    let a_vals = vec![4, 6, 8];
+    println!("A, N, Throughput, Delay");
+    for a in a_vals {
+        for n in n_vals.clone() {
+            let mut total_processed: f64 = 0.0;
+            let mut total_delay: f64 = 0.0;
+            for _ in 0..10 {
+                let mut servers: Vec<_> = (0..n)
+                    .map(|id| {
+                        Server::new(
+                            id,
+                            Markov::new(f64::from(a)),
+                            psize,
+                            resolution,
+                            f64::from(pspeed),
+                            true,
+                        )
+                    })
+                    .collect();
+
+                let mut pstats = OnlineStats::new();
+                let mut medium = Medium::new(n, 26);
+                for i in 0..ticks {
+                    let mut local_state = BitVec::from_elem(n, false);
+                    for server in servers.iter_mut() {
+                        if let Some(p) = server.tick(&mut local_state, &medium, i) {
+                            pstats.add(f64::from(i - p.time_generated) / resolution);
+                        }
+                    }
+                    medium.write(local_state);
+                    medium.tick();
+                }
+                let curr_processed: u32 = servers
+                    .iter()
+                    .map(|server| server.packets_processed())
+                    .sum();
+                total_processed += curr_processed as f64;
+                total_delay += pstats.mean();
+            }
+            println!("{}, {}, {}, {}", a, n, (total_processed * psize as f64)/10.0, total_delay/10.0);
+        }
+    }
 }
 
 fn main() {
@@ -167,6 +235,11 @@ fn main() {
 
     let params = parse_params(&matches);
     println!("{}", params);
+
+    if params.gen_report {
+        gen_report();
+        return;
+    }
 
     let ticks = params.duration * params.resolution as u32;
     let mut servers: Vec<_> = (0..params.ncount)
